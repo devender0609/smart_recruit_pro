@@ -1,4 +1,4 @@
-{
+﻿{
   "functions": {
     "app/**/route.ts": {
       "maxDuration": 60,
