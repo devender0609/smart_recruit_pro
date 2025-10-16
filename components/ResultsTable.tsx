@@ -25,7 +25,7 @@ export default function ResultsTable({ results = [] as any[] }) {
           </thead>
           <tbody>
             {results.map((r:any, idx:number) => (
-              <tr key={r.filename ?? idx} className="border-t">
+              <tr key={`${r.filename}-${idx}`} className="border-t">
                 <td className="px-5 py-3 font-semibold">{idx+1}</td>
                 <td className="px-5 py-3">{r.filename}</td>
                 <td className="px-5 py-3">{((r.score ?? 0) * 100).toFixed(1)}%</td>
