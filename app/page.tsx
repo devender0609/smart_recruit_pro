@@ -2,14 +2,54 @@
 import { useState } from "react";
 import ResultsTable from "../components/ResultsTable";
 
+// Light detector for scanned PDFs
+function looksLikePdfObjects(s: string) {
+  return /%PDF-|\/Type\s*\/XObject|\/Subtype\s*\/(Image|Form)|\/CCITTFaxDecode|endobj|stream/i.test(s);
+}
+
+async function readAsTextIfPlain(file: File): Promise<string> {
+  // Quick attempt: some "pdf" exports are actually text
+  try {
+    const ab = await file.arrayBuffer();
+    const txt = new TextDecoder().decode(new Uint8Array(ab).slice(0, 2048));
+    if (looksLikePdfObjects(txt)) return ""; // likely scanned/binary
+    return new TextDecoder().decode(ab);
+  } catch {
+    return "";
+  }
+}
+
+// Client-side OCR with tesseract.js (only for scanned PDFs)
+async function ocrInBrowser(file: File): Promise<string> {
+  // Lazy import on client (no SSR)
+  const tesseract = await import("tesseract.js");
+  const { createWorker } = (tesseract as any);
+
+  const worker = await createWorker({
+    logger: (m: any) => {
+      // Optional: console.log("OCR", m);
+    },
+  });
+  try {
+    await worker.loadLanguage("eng");
+    await worker.initialize("eng");
+    const { data: { text } } = await worker.recognize(file);
+    await worker.terminate();
+    return (text || "").replace(/\s+/g, " ").trim();
+  } catch (e) {
+    try { await worker.terminate(); } catch {}
+    return "";
+  }
+}
+
 export default function Page() {
   const [jd, setJd] = useState("");
   const [jdFile, setJdFile] = useState<File | null>(null);
   const [files, setFiles] = useState<FileList | null>(null);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<any[]>([]);
+  const [progress, setProgress] = useState<string>("");
 
-  // simple concurrency limiter
   function pLimit(n: number) {
     const running: Promise<any>[] = [];
     let active = 0;
@@ -27,6 +67,45 @@ export default function Page() {
     return next;
   }
 
+  async function extractResumeText(file: File): Promise<{ text: string; notes: string[] }> {
+    const notes: string[] = [];
+    const ext = file.name.toLowerCase();
+
+    // Fast path: TXT or DOCX will be parsed on server, but try to send text when easy
+    if (ext.endsWith(".txt")) {
+      const t = await file.text();
+      return { text: t, notes };
+    }
+
+    // For PDFs, try to detect if it's already texty
+    if (ext.endsWith(".pdf")) {
+      // small peek
+      const peek = await file.slice(0, 4096).text().catch(() => "");
+      if (peek && !looksLikePdfObjects(peek)) {
+        // It might still be binary but give server a chance — return empty to let API parse
+        return { text: "", notes };
+      }
+      // Try a quick read (sometimes exported text-based PDFs decode okay)
+      const quick = await readAsTextIfPlain(file);
+      if (quick && !looksLikePdfObjects(quick)) {
+        return { text: quick, notes };
+      }
+
+      // Otherwise, client-side OCR
+      setProgress(`OCR: ${file.name}`);
+      const ocrText = await ocrInBrowser(file);
+      if (ocrText && ocrText.length > 40) {
+        notes.push("Client OCR used");
+        return { text: ocrText, notes };
+      }
+      notes.push("Scanned/image PDF; OCR failed or empty");
+      return { text: "", notes };
+    }
+
+    // Let the server parse DOCX (mammoth) or unknowns
+    return { text: "", notes };
+  }
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if ((!jd || jd.trim().length === 0) && !jdFile) {
@@ -38,26 +117,42 @@ export default function Page() {
       return;
     }
 
-    const limiter = pLimit(2); // keep low (1–3) to avoid serverless timeouts
+    const limiter = pLimit(2);
     setLoading(true);
     setResults([]);
+    setProgress("");
 
-    // Build JD payload once
+    // Prepare JD (either text or file; server can parse JD file)
     const jdPayload = new FormData();
     if (jd.trim().length > 0) jdPayload.append("jd", jd);
     if (jdFile) jdPayload.append("jdFile", jdFile);
 
     const tasks = Array.from(files).map((file) =>
       limiter(async () => {
+        // Client-side pre-extraction when needed
+        const { text: extracted, notes: clientNotes } = await extractResumeText(file);
+
         const form = new FormData();
         for (const [k, v] of jdPayload.entries()) form.append(k, v);
-        form.append("resumes", file); // ONE resume per request
+
+        if (extracted && extracted.length > 0) {
+          // Send just text (fast path)
+          form.append("resumeText", extracted);
+          form.append("resumeName", file.name);
+        } else {
+          // Fallback: send the file and let server parse
+          form.append("resumes", file);
+        }
 
         const res = await fetch("/api/score", { method: "POST", body: form });
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
         const [one] = data.results || [];
         if (one) {
+          // Merge client-side notes (e.g., “Client OCR used”)
+          if (clientNotes.length) {
+            one.notes = one.notes && one.notes !== "—" ? `${one.notes}; ${clientNotes.join("; ")}` : clientNotes.join("; ");
+          }
           setResults((prev) => {
             const next = [...prev, one].sort((a, b) => (b.score || 0) - (a.score || 0));
             return next;
@@ -70,6 +165,7 @@ export default function Page() {
       await Promise.allSettled(tasks);
     } finally {
       setLoading(false);
+      setProgress("");
     }
   }
 
@@ -102,12 +198,10 @@ export default function Page() {
       <section className="card p-6">
         <h1 className="text-2xl font-semibold mb-2">AI Candidate Shortlisting</h1>
         <p className="text-gray-600 mb-6">
-          Upload a job description and unlimited resumes (PDF, DOCX, TXT). Results appear progressively with match
-          score, evidence, experience, education and notes.
+          Paste or upload a job description, then upload multiple resumes. Scanned PDFs are OCR’d in your browser for best results.
         </p>
 
         <form onSubmit={onSubmit} className="grid gap-4">
-          {/* JD Paste */}
           <label className="grid gap-2">
             <span className="text-sm font-medium">Job Description (Paste)</span>
             <textarea
@@ -122,7 +216,6 @@ export default function Page() {
             <span className="text-xs text-gray-500">Tip: If you upload a JD file below, you don’t need to paste text.</span>
           </label>
 
-          {/* JD Upload */}
           <label className="grid gap-2">
             <span className="text-sm font-medium">Or Upload JD (PDF, DOCX, TXT)</span>
             <input
@@ -137,7 +230,6 @@ export default function Page() {
             />
           </label>
 
-          {/* Resumes */}
           <label className="grid gap-2">
             <span className="text-sm font-medium">Resumes (PDF, DOCX, TXT) — multiple allowed</span>
             <input
@@ -151,14 +243,14 @@ export default function Page() {
           </label>
 
           <div className="flex gap-3 items-center flex-wrap">
-            <button className="btn btn-primary" disabled={loading}>{loading ? "Scoring..." : "Generate Shortlist"}</button>
+            <button className="btn btn-primary" disabled={loading}>{loading ? (progress || "Processing…") : "Generate Shortlist"}</button>
             <button type="button" className="btn btn-ghost" onClick={() => { setJd(""); setJdFile(null); setFiles(null); setResults([]); }}>
               Reset
             </button>
             <button type="button" className="btn btn-ghost" onClick={downloadCSV} disabled={!results.length}>
               Export CSV
             </button>
-            <span className="badge border-brand-200 text-brand-700 bg-brand-50">OCR & embeddings via env</span>
+            <span className="badge border-brand-200 text-brand-700 bg-brand-50">Client OCR enabled</span>
           </div>
         </form>
       </section>
