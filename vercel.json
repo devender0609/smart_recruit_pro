@@ -1,8 +1,6 @@
-﻿{
+{
   "functions": {
-    "app/**/route.ts": {
-      "maxDuration": 60,
-      "memory": 1024
-    }
+    "app/**/route.js": { "maxDuration": 60, "memory": 1024 },
+    "app/**/route.ts": { "maxDuration": 60, "memory": 1024 }
   }
 }
