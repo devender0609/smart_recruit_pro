@@ -1,24 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 
-export const runtime = "nodejs";          // App Router-friendly
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
-// --------- Utilities & constants ----------
+/* ---------------------------- text + scoring utils --------------------------- */
+
 const STOP = new Set([
   "the","a","an","and","or","for","to","of","in","on","with","by","at","as","is","are","was","were","be",
   "this","that","these","those","from","it","its","we","you","they","their","our","your","but","not","will",
   "can","may","should","would","could","if","then","than","so","such","into","over","under","about","across"
 ]);
 
-// Expand or customize freely
 const defaultSkills = [
   "react","next.js","typescript","javascript","node","python","java","c#","c++","sql","nosql","mongodb","postgres","mysql",
   "aws","gcp","azure","docker","kubernetes","ci/cd","jenkins","github actions","ml","machine learning","nlp","pytorch","tensorflow",
   "golang","ruby","php","html","css","tailwind","kafka","spark","hadoop","linux","bash","graphql","microservices","terraform","ansible"
 ];
 
-// Synonyms mapping to fold variations into same concept
 const synonyms: Record<string, string[]> = {
   "ml": ["machine learning","ml"],
   "ci/cd": ["ci/cd","continuous integration","continuous delivery","continuous deployment"],
@@ -29,9 +28,9 @@ const synonyms: Record<string, string[]> = {
   "aws": ["aws","amazon web services"],
 };
 
-// basic text ops
 const dec = new TextDecoder();
 const normalizeWS = (s: string) => s.replace(/\u0000/g, " ").replace(/\s+/g, " ").trim();
+
 function tokenize(text: string) {
   return (text || "")
     .toLowerCase()
@@ -54,7 +53,6 @@ function norm(a: Map<string, number>) { let s = 0; for (const [, v] of a) s += v
 function cosineSim(a: Map<string, number>, b: Map<string, number>) { return dot(a,b)/(norm(a)*norm(b)); }
 
 function cleanPdfArtifacts(text: string) {
-  // Drop obvious PDF object lines & metadata blocks
   const lines = text.split(/\r?\n/).filter(l =>
     !/<<\s*\/Type\s*\/XObject/i.test(l) &&
     !/\/Subtype\s*\/(Image|Form)/i.test(l) &&
@@ -66,31 +64,90 @@ function cleanPdfArtifacts(text: string) {
   return normalizeWS(lines.join(" "));
 }
 
-function estimateYears(text: string) {
-  const m = text.match(/(\d+)\s*(\+)?\s*(?:years|yrs)\s+(?:of\s+)?(?:experience|exp)\b/i) ||
-            text.match(/experience\s*[:\-]?\s*(\d+)\s*(\+)?\s*(?:years|yrs)\b/i);
-  return m ? `${m[1]}${m[2] ? "+" : ""} yrs` : "—";
+/* ----------------------------- Experience (yrs) ----------------------------- */
+
+const MONTHS: Record<string, number> = {
+  jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,sept:8,oct:9,nov:10,dec:11
+};
+
+function parseMonthYear(s: string): Date | null {
+  s = s.toLowerCase().trim();
+  const m1 = s.match(/\b([a-z]{3,9})\s+(\d{4})\b/);
+  if (m1 && MONTHS[m1[1].slice(0,3)]) {
+    return new Date(Number(m1[2]), MONTHS[m1[1].slice(0,3)], 1);
+  }
+  const m2 = s.match(/\b(19|20)\d{2}\b/);
+  if (m2) return new Date(Number(m2[0]), 0, 1);
+  return null;
 }
+
+function sumExperienceYears(text: string): string {
+  const now = new Date();
+  let months = 0;
+
+  const rangeRe = new RegExp(
+    [
+      "([A-Za-z]{3,9}\\s+\\d{4})\\s*[-–—to]+\\s*(Present|Now|Current|[A-Za-z]{3,9}\\s+\\d{4}|(19|20)\\d{2})",
+      "((19|20)\\d{2})\\s*[-–—to]+\\s*(Present|Now|Current|(19|20)\\d{2})"
+    ].join("|"),
+    "gi"
+  );
+
+  const seen = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = rangeRe.exec(text)) !== null) {
+    const raw = m[0];
+    if (seen.has(raw)) continue;
+    seen.add(raw);
+
+    const parts = raw.split(/[-–—to]+/i).map(s => s.trim());
+    const start = parseMonthYear(parts[0]);
+    const endToken = parts[1]?.toLowerCase();
+    const end =
+      /present|now|current/.test(endToken || "") ? now : parseMonthYear(parts[1] || "");
+
+    if (start) {
+      const endDate = end || now;
+      const dm = (endDate.getFullYear() - start.getFullYear()) * 12 + (endDate.getMonth() - start.getMonth());
+      if (dm > 0 && dm < 80 * 12) months += dm;
+    }
+  }
+
+  if (months < 12) {
+    const expPhrase = text.match(/(\d+)\s*(\+)?\s*(?:years|yrs)\s+(?:of\s+)?(?:experience|exp)\b/i);
+    if (expPhrase) return `${expPhrase[1]}${expPhrase[2] ? "+" : ""} yrs`;
+  }
+
+  if (months <= 0) return "—";
+  const yrs = months / 12;
+  return yrs >= 0.5 ? `${yrs.toFixed(1)} yrs` : `${months} mos`;
+}
+
+/* -------------------------------- Education -------------------------------- */
 
 function detectEducation(text: string) {
   const t = text.toLowerCase();
-  if (/(phd|doctor of philosophy)/.test(t)) return "PhD";
-  if (/(master of|msc|m\.s\.|mtech|m\.tech|mscs|ms)/.test(t)) return "Master's";
-  if (/(bachelor of|bsc|b\.e\.|btech|b\.tech|bs|b\.s\.)/.test(t)) return "Bachelor's";
+  if (/(phd|doctor of philosophy|doctorate)\b/.test(t)) return "PhD";
+  if (/(mba|master of|m\.s\.|msc|mtech|m\.tech|mscs|ms in)\b/.test(t)) return "Master's";
+  if (/(bachelor of|b\.s\.|bs in|bsc|b\.tech|btech|b\.e\.)\b/.test(t)) return "Bachelor's";
+  if (/diploma in\b/.test(t)) return "Diploma";
   return "—";
 }
 
-function extractSnippet(text: string, queryTokens: string[]) {
-  const lower = text.toLowerCase();
-  for (const k of queryTokens) {
+/* --------------------------------- Snippet --------------------------------- */
+
+function extractSnippet(text: string, jdTokens: string[]) {
+  const clean = text.replace(/\s+/g, " ").trim();
+  const lower = clean.toLowerCase();
+  for (const k of jdTokens) {
     const pos = lower.indexOf(k);
     if (pos >= 0) {
-      const start = Math.max(0, pos - 90);
-      const end = Math.min(text.length, pos + 160);
-      return text.slice(start, end) + (end < text.length ? "..." : "");
+      const start = clean.lastIndexOf(". ", Math.max(0, pos - 120)) + 1;
+      const end = clean.indexOf(". ", pos + 20);
+      if (end > start) return clean.slice(start, Math.min(end + 1, start + 260));
     }
   }
-  return text.slice(0, 250) + (text.length > 250 ? "..." : "");
+  return clean.slice(0, 240) + (clean.length > 240 ? "…" : "");
 }
 
 function foldSynonyms(textLower: string) {
@@ -101,14 +158,14 @@ function foldSynonyms(textLower: string) {
   return hits;
 }
 
-// --------- File parsing (lazy imports) ----------
+/* ---------------------------- Parsing (lazy import) ---------------------------- */
+
 async function bufferToText(filename: string, buf: Buffer): Promise<string> {
   const { fileTypeFromBuffer } = await import("file-type");
   const ft = await fileTypeFromBuffer(buf);
   const mime = ft?.mime || "";
   const lower = filename.toLowerCase();
 
-  // PDF (text based)
   if (mime.includes("pdf") || lower.endsWith(".pdf")) {
     try {
       const mod = await import("pdf-parse");
@@ -120,7 +177,6 @@ async function bufferToText(filename: string, buf: Buffer): Promise<string> {
     } catch {}
   }
 
-  // DOCX
   if (mime.includes("officedocument.wordprocessingml.document") || lower.endsWith(".docx")) {
     try {
       const mammoth = await import("mammoth");
@@ -129,7 +185,6 @@ async function bufferToText(filename: string, buf: Buffer): Promise<string> {
     } catch {}
   }
 
-  // Fallback plain text
   try {
     return normalizeWS(dec.decode(buf));
   } catch {
@@ -153,7 +208,8 @@ async function ocrFallback(buf: Buffer): Promise<string> {
   }
 }
 
-// --------- Optional semantic boost via embeddings ----------
+/* -------------------------- Optional embedding boost ------------------------- */
+
 async function embeddingSim(a: string, b: string): Promise<number> {
   if (!process.env.OPENAI_API_KEY) return 0;
   try {
@@ -178,10 +234,11 @@ async function embeddingSim(a: string, b: string): Promise<number> {
   }
 }
 
-// --------- Scoring ----------
+/* --------------------------------- Scoring --------------------------------- */
+
 function scoreResume(jdText: string, resumeText: string, semBoost = 0) {
   const jdTokensAll = tokenize(jdText);
-  const rTokensAll = tokenize(resumeText);
+  const rTokensAll  = tokenize(resumeText);
 
   const jdKeys = keywords(jdTokensAll, 3);
   const rKeys  = keywords(rTokensAll, 3);
@@ -189,48 +246,39 @@ function scoreResume(jdText: string, resumeText: string, semBoost = 0) {
   const jdSet = new Set(jdKeys);
   const rSet  = new Set(rKeys);
 
-  // Overlap on keywords
   const overlap = [...jdSet].filter(t => rSet.has(t));
   const overlapScore = overlap.length / Math.max(1, jdSet.size);
 
-  // Cosine
   const jdBag = bag(jdKeys), rBag = bag(rKeys);
   const cosine = cosineSim(jdBag, rBag);
 
-  // Skills (default + synonyms)
   const lower = resumeText.toLowerCase();
   const synHits = foldSynonyms(lower);
-  const skillHits = [
-    ...new Set(
-      defaultSkills.filter(s => lower.includes(s))
-      .concat(synHits)
-    )
-  ];
+  const skillHits = [...new Set(defaultSkills.filter(s => lower.includes(s)).concat(synHits))];
   const skillScore = Math.min(1, skillHits.length / 12);
 
-  // Final
   const finalScore = Math.min(1,
-    0.40 * overlapScore +
+    0.35 * overlapScore +
     0.30 * cosine +
     0.25 * skillScore +
-    0.05 * semBoost
+    0.10 * semBoost
   );
 
   return {
     score: finalScore,
-    evidence: [...new Set([...overlap.slice(0, 6), ...skillHits.slice(0, 6)])].slice(0, 8),
-    experience: estimateYears(resumeText),
+    evidence: [...new Set([...overlap.slice(0,6), ...skillHits.slice(0,6)])].slice(0,8),
+    experience: sumExperienceYears(resumeText),
     education: detectEducation(resumeText),
     snippet: extractSnippet(resumeText, jdKeys),
   };
 }
 
-// --------- Route handlers ----------
+/* --------------------------------- Routes --------------------------------- */
+
 export async function POST(req: NextRequest) {
   try {
     const form = await req.formData();
 
-    // JD
     let jdText = (form.get("jd") || "").toString().trim();
     const jdFile = form.get("jdFile") as File | null;
     if ((!jdText || jdText.length === 0) && jdFile) {
@@ -238,13 +286,9 @@ export async function POST(req: NextRequest) {
       jdText = await bufferToText(jdFile.name, Buffer.from(a));
     }
 
-    // Resumes
     const files = form.getAll("resumes").filter(Boolean) as File[];
     if ((!jdText || jdText.length === 0) || files.length === 0) {
-      return NextResponse.json(
-        { error: "Missing job description (text or file) or resumes." },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Missing job description (text or file) or resumes." }, { status: 400 });
     }
 
     const results: any[] = [];
@@ -255,13 +299,10 @@ export async function POST(req: NextRequest) {
       let charCount = (text || "").trim().length;
       let notes = "";
 
-      // If suspiciously short, try OCR (for scanned PDFs)
       if (charCount < 120) {
         const ocrText = await ocrFallback(buf);
         if (ocrText && ocrText.length > charCount) {
-          text = ocrText;
-          charCount = ocrText.length;
-          notes = "OCR used";
+          text = ocrText; charCount = ocrText.length; notes = "OCR used";
         } else if (f.name.toLowerCase().endsWith(".pdf")) {
           notes = "No extractable text — likely a scanned/image PDF. Provide DOCX/TXT or enable OCR.";
         } else {
@@ -272,17 +313,12 @@ export async function POST(req: NextRequest) {
       const sem = await embeddingSim(jdText, text || "");
       const s = scoreResume(jdText, text || "", sem);
 
-      results.push({
-        filename: f.name,
-        ...s,
-        charCount,
-        notes,
-      });
+      results.push({ filename: f.name, ...s, charCount, notes });
     }
 
-    results.sort((a, b) => b.score - a.score);
+    results.sort((a,b)=>b.score-a.score);
     return NextResponse.json({ results });
-  } catch (e: any) {
+  } catch (e:any) {
     return NextResponse.json({ error: e?.message || "Unexpected error" }, { status: 500 });
   }
 }

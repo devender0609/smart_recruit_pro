@@ -41,7 +41,18 @@ export default function Page() {
 
   function downloadCSV() {
     if (!results.length) return;
-    const headers = ["Rank", "Candidate", "Score", "Evidence", "Experience", "Education", "Chars", "Notes"];
+
+    const headers = [
+      "Rank",
+      "Candidate",
+      "Score",
+      "Evidence",
+      "Experience",
+      "Education",
+      "Chars",
+      "Notes",
+    ];
+
     const rows = results.map((r: any, i: number) => [
       i + 1,
       r.filename,
@@ -53,13 +64,12 @@ export default function Page() {
       r.notes || "",
     ]);
 
-    // Compatible escaper (no String.replaceAll)
+    // Compatible CSV escaper (no String.replaceAll required)
     const esc = (s: any) => String(s).replace(/"/g, '""');
 
-    const csv =
-      [headers, ...rows]
-        .map((row) => row.map((cell) => `"${esc(cell)}"`).join(","))
-        .join("\n");
+    const csv = [headers, ...rows]
+      .map((row) => row.map((cell) => `"${esc(cell)}"`).join(","))
+      .join("\n");
 
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -75,10 +85,12 @@ export default function Page() {
       <section className="card p-6">
         <h1 className="text-2xl font-semibold mb-2">AI Candidate Shortlisting</h1>
         <p className="text-gray-600 mb-6">
-          Upload a job description and unlimited resumes (PDF, DOCX, TXT). Get an instant ranked shortlist with evidence.
+          Upload a job description and unlimited resumes (PDF, DOCX, TXT). Get
+          an instant ranked shortlist with evidence.
         </p>
 
         <form onSubmit={onSubmit} className="grid gap-4">
+          {/* JD Paste */}
           <label className="grid gap-2">
             <span className="text-sm font-medium">Job Description (Paste)</span>
             <textarea
@@ -95,6 +107,7 @@ export default function Page() {
             </span>
           </label>
 
+          {/* JD Upload */}
           <label className="grid gap-2">
             <span className="text-sm font-medium">Or Upload JD (PDF, DOCX, TXT)</span>
             <input
@@ -109,8 +122,11 @@ export default function Page() {
             />
           </label>
 
+          {/* Resumes Upload */}
           <label className="grid gap-2">
-            <span className="text-sm font-medium">Resumes (PDF, DOCX, TXT) — multiple allowed</span>
+            <span className="text-sm font-medium">
+              Resumes (PDF, DOCX, TXT) — multiple allowed
+            </span>
             <input
               type="file"
               multiple
@@ -137,7 +153,12 @@ export default function Page() {
             >
               Reset
             </button>
-            <button type="button" className="btn btn-ghost" onClick={downloadCSV} disabled={!results.length}>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={downloadCSV}
+              disabled={!results.length}
+            >
               Export CSV
             </button>
             <span className="badge border-brand-200 text-brand-700 bg-brand-50">
