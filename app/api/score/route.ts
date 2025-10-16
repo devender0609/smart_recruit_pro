@@ -4,7 +4,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
-/* ---------------------------- text + scoring utils --------------------------- */
+/* ---------------------------- utilities & constants ---------------------------- */
 
 const STOP = new Set([
   "the","a","an","and","or","for","to","of","in","on","with","by","at","as","is","are","was","were","be",
@@ -52,78 +52,65 @@ function dot(a: Map<string, number>, b: Map<string, number>) {
 function norm(a: Map<string, number>) { let s = 0; for (const [, v] of a) s += v * v; return Math.sqrt(s) || 1; }
 function cosineSim(a: Map<string, number>, b: Map<string, number>) { return dot(a,b)/(norm(a)*norm(b)); }
 
+/* ----------------------- stronger PDF junk / noise detection ----------------------- */
+
+function looksLikePdfObjects(s: string) {
+  return /\/Type\s*\/XObject/i.test(s) || /\/Subtype\s*\/(Image|Form)/i.test(s) || /\/BitsPerComponent/i.test(s);
+}
+function isMostlyNoise(s: string) {
+  if (!s) return true;
+  const clean = s.replace(/\s/g, "");
+  if (clean.length < 40) return true;
+  const letters = (clean.match(/[a-zA-Z]/g) || []).length;
+  return letters / clean.length < 0.35; // >65% non-letters → treat as noise
+}
 function cleanPdfArtifacts(text: string) {
-  const lines = text.split(/\r?\n/).filter(l =>
-    !/<<\s*\/Type\s*\/XObject/i.test(l) &&
-    !/\/Subtype\s*\/(Image|Form)/i.test(l) &&
-    !/\/BitsPerComponent/i.test(l) &&
-    !/\/Length\s+\d+/i.test(l) &&
-    !/stream\s*$/i.test(l) &&
-    !/endobj/i.test(l)
-  );
+  const lines = text.split(/\r?\n/).filter(l => !looksLikePdfObjects(l) && !/\/Length\s+\d+/i.test(l) && !/endobj/i.test(l) && !/stream/i.test(l));
   return normalizeWS(lines.join(" "));
 }
 
-/* ----------------------------- Experience (yrs) ----------------------------- */
+/* ----------------------------- experience extraction ----------------------------- */
 
-const MONTHS: Record<string, number> = {
-  jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,sept:8,oct:9,nov:10,dec:11
-};
-
+const MONTHS: Record<string, number> = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,sept:8,oct:9,nov:10,dec:11 };
 function parseMonthYear(s: string): Date | null {
   s = s.toLowerCase().trim();
   const m1 = s.match(/\b([a-z]{3,9})\s+(\d{4})\b/);
-  if (m1 && MONTHS[m1[1].slice(0,3)]) {
-    return new Date(Number(m1[2]), MONTHS[m1[1].slice(0,3)], 1);
-  }
+  if (m1 && MONTHS[m1[1].slice(0,3)]) return new Date(Number(m1[2]), MONTHS[m1[1].slice(0,3)], 1);
   const m2 = s.match(/\b(19|20)\d{2}\b/);
   if (m2) return new Date(Number(m2[0]), 0, 1);
   return null;
 }
-
 function sumExperienceYears(text: string): string {
   const now = new Date();
   let months = 0;
-
-  const rangeRe = new RegExp(
-    [
-      "([A-Za-z]{3,9}\\s+\\d{4})\\s*[-–—to]+\\s*(Present|Now|Current|[A-Za-z]{3,9}\\s+\\d{4}|(19|20)\\d{2})",
-      "((19|20)\\d{2})\\s*[-–—to]+\\s*(Present|Now|Current|(19|20)\\d{2})"
-    ].join("|"),
-    "gi"
-  );
-
+  const rangeRe = new RegExp([
+    "([A-Za-z]{3,9}\\s+\\d{4})\\s*[-–—to]+\\s*(Present|Now|Current|[A-Za-z]{3,9}\\s+\\d{4}|(19|20)\\d{2})",
+    "((19|20)\\d{2})\\s*[-–—to]+\\s*(Present|Now|Current|(19|20)\\d{2})"
+  ].join("|"), "gi");
   const seen = new Set<string>();
   let m: RegExpExecArray | null;
   while ((m = rangeRe.exec(text)) !== null) {
-    const raw = m[0];
-    if (seen.has(raw)) continue;
-    seen.add(raw);
-
+    const raw = m[0]; if (seen.has(raw)) continue; seen.add(raw);
     const parts = raw.split(/[-–—to]+/i).map(s => s.trim());
     const start = parseMonthYear(parts[0]);
     const endToken = parts[1]?.toLowerCase();
-    const end =
-      /present|now|current/.test(endToken || "") ? now : parseMonthYear(parts[1] || "");
-
+    const end = /present|now|current/.test(endToken || "") ? now : parseMonthYear(parts[1] || "");
     if (start) {
       const endDate = end || now;
-      const dm = (endDate.getFullYear() - start.getFullYear()) * 12 + (endDate.getMonth() - start.getMonth());
-      if (dm > 0 && dm < 80 * 12) months += dm;
+      const dm = (endDate.getFullYear() - start.getFullYear())*12 + (endDate.getMonth() - start.getMonth());
+      if (dm > 0 && dm < 80*12) months += dm;
     }
   }
-
   if (months < 12) {
     const expPhrase = text.match(/(\d+)\s*(\+)?\s*(?:years|yrs)\s+(?:of\s+)?(?:experience|exp)\b/i);
     if (expPhrase) return `${expPhrase[1]}${expPhrase[2] ? "+" : ""} yrs`;
   }
-
   if (months <= 0) return "—";
-  const yrs = months / 12;
+  const yrs = months/12;
   return yrs >= 0.5 ? `${yrs.toFixed(1)} yrs` : `${months} mos`;
 }
 
-/* -------------------------------- Education -------------------------------- */
+/* -------------------------------- education detection ------------------------------- */
 
 function detectEducation(text: string) {
   const t = text.toLowerCase();
@@ -134,7 +121,7 @@ function detectEducation(text: string) {
   return "—";
 }
 
-/* --------------------------------- Snippet --------------------------------- */
+/* ----------------------------------- snippet ----------------------------------- */
 
 function extractSnippet(text: string, jdTokens: string[]) {
   const clean = text.replace(/\s+/g, " ").trim();
@@ -150,6 +137,8 @@ function extractSnippet(text: string, jdTokens: string[]) {
   return clean.slice(0, 240) + (clean.length > 240 ? "…" : "");
 }
 
+/* --------------------------------- synonyms fold --------------------------------- */
+
 function foldSynonyms(textLower: string) {
   const hits: string[] = [];
   for (const canon in synonyms) {
@@ -158,39 +147,48 @@ function foldSynonyms(textLower: string) {
   return hits;
 }
 
-/* ---------------------------- Parsing (lazy import) ---------------------------- */
+/* --------------------------------- parsing files --------------------------------- */
 
-async function bufferToText(filename: string, buf: Buffer): Promise<string> {
+async function bufferToText(filename: string, buf: Buffer): Promise<{ text: string; raw: string }> {
   const { fileTypeFromBuffer } = await import("file-type");
   const ft = await fileTypeFromBuffer(buf);
   const mime = ft?.mime || "";
   const lower = filename.toLowerCase();
 
+  // PDF (text-based)
   if (mime.includes("pdf") || lower.endsWith(".pdf")) {
     try {
       const mod = await import("pdf-parse");
       const pdf = (mod as any).default || (mod as any);
       const data = await pdf(buf);
-      if (data.text && data.text.trim().length > 40) {
-        return cleanPdfArtifacts(data.text);
+      const raw = (data.text || "").trim();
+      if (raw.length > 0) {
+        const cleaned = cleanPdfArtifacts(raw);
+        return { text: cleaned, raw };
       }
     } catch {}
   }
 
+  // DOCX
   if (mime.includes("officedocument.wordprocessingml.document") || lower.endsWith(".docx")) {
     try {
       const mammoth = await import("mammoth");
       const res = await (mammoth as any).extractRawText({ buffer: buf });
-      if (res.value) return normalizeWS(res.value);
+      const raw = (res.value || "").trim();
+      return { text: normalizeWS(raw), raw };
     } catch {}
   }
 
+  // Plain text fallback
   try {
-    return normalizeWS(dec.decode(buf));
+    const raw = dec.decode(buf);
+    return { text: normalizeWS(raw), raw };
   } catch {
-    return "";
+    return { text: "", raw: "" };
   }
 }
+
+/* --------------------------------- OCR fallback --------------------------------- */
 
 async function ocrFallback(buf: Buffer): Promise<string> {
   if (process.env.OCR_ENABLED !== "true") return "";
@@ -208,7 +206,7 @@ async function ocrFallback(buf: Buffer): Promise<string> {
   }
 }
 
-/* -------------------------- Optional embedding boost ------------------------- */
+/* --------------------------- optional embedding boost --------------------------- */
 
 async function embeddingSim(a: string, b: string): Promise<number> {
   if (!process.env.OPENAI_API_KEY) return 0;
@@ -223,20 +221,18 @@ async function embeddingSim(a: string, b: string): Promise<number> {
       const j = await r.json();
       return j?.data?.[0]?.embedding as number[] | undefined;
     };
-    const [ea, eb] = await Promise.all([embed(a.slice(0, 8000)), embed(b.slice(0, 8000))]);
+    const [ea, eb] = await Promise.all([embed(a.slice(0,8000)), embed(b.slice(0,8000))]);
     if (!ea || !eb) return 0;
-    const d = ea.reduce((s, v, i) => s + v * eb[i], 0);
-    const na = Math.sqrt(ea.reduce((s, v) => s + v * v, 0)) || 1;
-    const nb = Math.sqrt(eb.reduce((s, v) => s + v * v, 0)) || 1;
-    return d / (na * nb);
-  } catch {
-    return 0;
-  }
+    const d = ea.reduce((s,v,i)=>s+v*eb[i],0);
+    const na = Math.sqrt(ea.reduce((s,v)=>s+v*v,0))||1;
+    const nb = Math.sqrt(eb.reduce((s,v)=>s+v*v,0))||1;
+    return d/(na*nb);
+  } catch { return 0; }
 }
 
-/* --------------------------------- Scoring --------------------------------- */
+/* ----------------------------------- scoring ----------------------------------- */
 
-function scoreResume(jdText: string, resumeText: string, semBoost = 0) {
+function scoreResume(jdText: string, resumeText: string, semBoost=0) {
   const jdTokensAll = tokenize(jdText);
   const rTokensAll  = tokenize(resumeText);
 
@@ -258,10 +254,7 @@ function scoreResume(jdText: string, resumeText: string, semBoost = 0) {
   const skillScore = Math.min(1, skillHits.length / 12);
 
   const finalScore = Math.min(1,
-    0.35 * overlapScore +
-    0.30 * cosine +
-    0.25 * skillScore +
-    0.10 * semBoost
+    0.35*overlapScore + 0.30*cosine + 0.25*skillScore + 0.10*semBoost
   );
 
   return {
@@ -273,17 +266,19 @@ function scoreResume(jdText: string, resumeText: string, semBoost = 0) {
   };
 }
 
-/* --------------------------------- Routes --------------------------------- */
+/* ------------------------------------ route ------------------------------------ */
 
 export async function POST(req: NextRequest) {
   try {
     const form = await req.formData();
 
+    // JD (text or file)
     let jdText = (form.get("jd") || "").toString().trim();
     const jdFile = form.get("jdFile") as File | null;
     if ((!jdText || jdText.length === 0) && jdFile) {
       const a = await jdFile.arrayBuffer();
-      jdText = await bufferToText(jdFile.name, Buffer.from(a));
+      const { text } = await bufferToText(jdFile.name, Buffer.from(a));
+      jdText = text;
     }
 
     const files = form.getAll("resumes").filter(Boolean) as File[];
@@ -291,29 +286,43 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing job description (text or file) or resumes." }, { status: 400 });
     }
 
-    const results: any[] = [];
+    const results:any[] = [];
     for (const f of files) {
       const a = await f.arrayBuffer(); const buf = Buffer.from(a);
 
-      let text = await bufferToText(f.name, buf);
-      let charCount = (text || "").trim().length;
-      let notes = "";
+      // 1) parse
+      let { text, raw } = await bufferToText(f.name, buf);
+      let notesArr: string[] = [];
+      let usedOCR = false;
 
-      if (charCount < 120) {
+      // 2) force OCR if we clearly see PDF object soup OR mostly noise
+      if (looksLikePdfObjects(raw) || isMostlyNoise(raw) || text.length < 120) {
         const ocrText = await ocrFallback(buf);
-        if (ocrText && ocrText.length > charCount) {
-          text = ocrText; charCount = ocrText.length; notes = "OCR used";
-        } else if (f.name.toLowerCase().endsWith(".pdf")) {
-          notes = "No extractable text — likely a scanned/image PDF. Provide DOCX/TXT or enable OCR.";
-        } else {
-          notes = "Very little text extracted.";
+        if (ocrText && ocrText.length > text.length) {
+          text = ocrText; usedOCR = true;
         }
       }
 
+      // 3) set notes
+      if (usedOCR) notesArr.push("OCR used");
+      if (!usedOCR && (looksLikePdfObjects(raw) || isMostlyNoise(text))) {
+        if (f.name.toLowerCase().endsWith(".pdf")) {
+          notesArr.push("Scanned or image-only PDF; enable OCR or upload DOCX/TXT");
+        } else {
+          notesArr.push("Very little text extracted");
+        }
+      }
+
+      const charCount = (text || "").length;
       const sem = await embeddingSim(jdText, text || "");
       const s = scoreResume(jdText, text || "", sem);
 
-      results.push({ filename: f.name, ...s, charCount, notes });
+      results.push({
+        filename: f.name,
+        ...s,
+        charCount,
+        notes: notesArr.join("; ") || "—",
+      });
     }
 
     results.sort((a,b)=>b.score-a.score);
