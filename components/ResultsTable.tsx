@@ -2,12 +2,18 @@ export default function ResultsTable({ results = [] as any[] }) {
   if (!results.length) {
     return (
       <section className="card p-6">
-        <div className="text-gray-500">
-          No results yet. Submit a job description and resumes to see ranked candidates.
-        </div>
+        <div className="text-gray-500">No results yet. Submit a job description and resumes.</div>
       </section>
     );
   }
+
+  // Only show columns that have data in at least one row
+  const anyTitle = results.some((r:any) => r.recentTitle && r.recentTitle !== "—");
+  const anyEdu   = results.some((r:any) => r.education && r.education !== "—");
+  const anyMatch = results.some((r:any) => r.matches && r.matches.length);
+  const anyGaps  = results.some((r:any) => r.gaps && r.gaps.length);
+  const anyNotes = results.some((r:any) => r.notes && r.notes !== "—");
+
   return (
     <section className="card p-0 overflow-hidden">
       <div className="overflow-x-auto">
@@ -15,15 +21,15 @@ export default function ResultsTable({ results = [] as any[] }) {
           <thead className="bg-gray-50 text-gray-700">
             <tr className="text-left">
               <th className="px-5 py-3">Rank</th>
-              <th className="px-5 py-3">Candidate (File)</th>
+              <th className="px-5 py-3">Candidate</th>
               <th className="px-5 py-3">Recommend</th>
               <th className="px-5 py-3">Match</th>
               <th className="px-5 py-3">Years</th>
-              <th className="px-5 py-3">Recent Title</th>
-              <th className="px-5 py-3">Education</th>
-              <th className="px-5 py-3">Key Matches</th>
-              <th className="px-5 py-3">Gaps</th>
-              <th className="px-5 py-3">Notes</th>
+              {anyTitle && <th className="px-5 py-3">Recent Title</th>}
+              {anyEdu   && <th className="px-5 py-3">Education</th>}
+              {anyMatch && <th className="px-5 py-3">Key Matches</th>}
+              {anyGaps  && <th className="px-5 py-3">Gaps</th>}
+              {anyNotes && <th className="px-5 py-3">Notes</th>}
             </tr>
           </thead>
           <tbody>
@@ -40,23 +46,27 @@ export default function ResultsTable({ results = [] as any[] }) {
                 </td>
                 <td className="px-5 py-3">{((r.score ?? 0) * 100).toFixed(0)}%</td>
                 <td className="px-5 py-3">{r.years ?? "—"}</td>
-                <td className="px-5 py-3">{r.recentTitle ?? "—"}</td>
-                <td className="px-5 py-3">{r.education ?? "—"}</td>
-                <td className="px-5 py-3">
-                  <div className="flex flex-wrap gap-2">
-                    {(r.matches ?? []).map((k:string) => (
-                      <span key={k} className="badge bg-green-50 border-green-200 text-green-700">{k}</span>
-                    ))}
-                  </div>
-                </td>
-                <td className="px-5 py-3">
-                  <div className="flex flex-wrap gap-2">
-                    {(r.gaps ?? []).map((k:string) => (
-                      <span key={k} className="badge bg-amber-50 border-amber-200 text-amber-700">{k}</span>
-                    ))}
-                  </div>
-                </td>
-                <td className="px-5 py-3">{r.notes ?? "—"}</td>
+                {anyTitle && <td className="px-5 py-3">{r.recentTitle ?? "—"}</td>}
+                {anyEdu   && <td className="px-5 py-3">{r.education ?? "—"}</td>}
+                {anyMatch && (
+                  <td className="px-5 py-3">
+                    <div className="flex flex-wrap gap-2">
+                      {(r.matches || []).map((k:string) => (
+                        <span key={k} className="badge bg-green-50 border-green-200 text-green-700">{k}</span>
+                      ))}
+                    </div>
+                  </td>
+                )}
+                {anyGaps && (
+                  <td className="px-5 py-3">
+                    <div className="flex flex-wrap gap-2">
+                      {(r.gaps || []).map((k:string) => (
+                        <span key={k} className="badge bg-amber-50 border-amber-200 text-amber-700">{k}</span>
+                      ))}
+                    </div>
+                  </td>
+                )}
+                {anyNotes && <td className="px-5 py-3">{r.notes ?? "—"}</td>}
               </tr>
             ))}
           </tbody>

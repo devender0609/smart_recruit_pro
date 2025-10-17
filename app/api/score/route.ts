@@ -11,7 +11,7 @@ const STOP = new Set([
 
 const KNOWN_SKILLS = [
   "react","next.js","typescript","javascript","node","python","java","c#","c++","go","golang","ruby","php",
-  "sql","postgres","mysql","mongodb","nosql","redis","graphql",
+  "sql","postgres","mysql","mongodb","redis","graphql",
   "aws","gcp","azure","docker","kubernetes","terraform","ansible","linux",
   "ci/cd","jenkins","github actions","kafka","spark","hadoop",
   "ml","machine learning","nlp","pytorch","tensorflow","scikit-learn",
@@ -38,9 +38,9 @@ function dot(a:Map<string,number>,b:Map<string,number>){let s=0; for(const[k,va]
 function norm(a:Map<string,number>){let s=0; for(const[,v]of a)s+=v*v; return Math.sqrt(s)||1;}
 function cos(a:Map<string,number>,b:Map<string,number>){return dot(a,b)/(norm(a)*norm(b));}
 
-function foldSynonymsPresent(textLower:string, items:string[]){
+function canonicalPresence(textLower:string, skills:string[]){
   const present = new Set<string>();
-  for (const canon of items){
+  for (const canon of skills){
     const alts = SYNONYM_CANON[canon] || [canon];
     if (alts.some(a => textLower.includes(a))) present.add(canon);
   }
@@ -58,8 +58,9 @@ function isMostlyNoise(s:string){
   return letters/c.length < 0.35;
 }
 
-/* ------------ Experience, Education, Recent Title (simple, robust) ------------ */
+/* ------------ Experience, Education, Recent Title (stronger heuristics) ------------ */
 function parseMonthYear(s:string){s=s.toLowerCase().trim(); const m1=s.match(/\b([a-z]{3,9})\s+(\d{4})\b/); if(m1 && MONTHS[m1[1].slice(0,3)]) return new Date(Number(m1[2]), MONTHS[m1[1].slice(0,3)], 1); const m2=s.match(/\b(19|20)\d{2}\b/); if(m2) return new Date(Number(m2[0]),0,1); return null;}
+
 function totalExperience(text:string){
   const now=new Date(); let months=0;
   const re=new RegExp(["([A-Za-z]{3,9}\\s+\\d{4})\\s*[-–—to]+\\s*(Present|Now|Current|[A-Za-z]{3,9}\\s+\\d{4}|(19|20)\\d{2})","((19|20)\\d{2})\\s*[-–—to]+\\s*(Present|Now|Current|(19|20)\\d{2})"].join("|"),"gi");
@@ -77,38 +78,64 @@ function totalExperience(text:string){
   }
   const yrs = months/12; return yrs>=0.5 ? `${yrs.toFixed(1)} yrs` : `${months} mos`;
 }
-function highestEducation(text:string){
-  const t=text.toLowerCase();
-  if (/(phd|doctor of philosophy|doctorate)\b/.test(t)) return "PhD";
-  if (/(mba|master of|m\.s\.|msc|mtech|m\.tech|mscs|ms in)\b/.test(t)) return "Master's";
-  if (/(bachelor of|b\.s\.|bs in|bsc|b\.tech|btech|b\.e\.)\b/.test(t)) return "Bachelor's";
-  if (/diploma in\b/.test(t)) return "Diploma";
+
+function highestEducation(text: string) {
+  const t = text.toLowerCase();
+  const phd = t.match(/\b(ph\.?d\.?|doctor of philosophy|doctorate)\b(?:[^.\n]{0,80})?/i);
+  if (phd) return "PhD";
+  const masters = t.match(/\b(mba|m\.?s\.?|m\.?sc\.?|master'?s|mtech|m\.?tech)\b(?:[^.\n]{0,80})?/i);
+  if (masters) return "Master's";
+  const bachelors = t.match(/\b(b\.?e\.?|b\.?tech|b\.?s\.?|bsc|bachelor'?s)\b(?:[^.\n]{0,80})?/i);
+  if (bachelors) return "Bachelor's";
+  const diploma = t.match(/\bdiploma\b(?:[^.\n]{0,80})?/i);
+  if (diploma) return "Diploma";
   return "—";
 }
-function recentTitle(text:string){
-  // pick the first plausible title line near "Experience"/role bullets
-  const lines = text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
-  for (let i=0;i<Math.min(lines.length,80);i++){
-    const L = lines[i];
-    if (/^(experience|work experience)\b/i.test(L)) continue;
-    // heuristics
-    if (/(engineer|developer|manager|lead|architect|analyst|consultant|specialist|director)\b/i.test(L) && L.length<120) {
-      return L.replace(/\s{2,}/g," ");
+
+function recentTitle(text: string) {
+  const blocks = text.split(/\n{2,}/).map(b => b.trim()).filter(Boolean);
+  const titleLine = (s: string) =>
+    /(intern|junior|senior|staff|principal)?\s*(software|backend|frontend|full[- ]stack|data|ml|devops|cloud|platform|mobile|qa|test|sre|security|product|project)\s*(engineer|developer|manager|lead|architect|analyst|scientist)\b/i.test(s);
+
+  for (const b of blocks.slice(0, 6)) {
+    if (/^(work\s+)?experience\b/i.test(b) || /(?:\b\d{4}\b).*?(?:present|current|\b\d{4}\b)/i.test(b)) {
+      const lines = b.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+      for (const L of lines.slice(0, 12)) {
+        const clean = L.replace(/\s{2,}/g, " ");
+        if (titleLine(clean) && clean.length <= 120) return clean;
+        const m = clean.match(/(.+?)\s+[–-]\s+(.+)|(.+?)\s+at\s+(.+)/i);
+        if (m) {
+          const t = [m[2], m[1], m[3], m[4]].filter(Boolean).find(titleLine);
+          if (t) return t;
+        }
+      }
     }
   }
-  // fallback: first short line
-  return lines[0]?.slice(0,120) || "—";
+  const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  for (const L of lines.slice(0, 60)) {
+    const clean = L.replace(/\s{2,}/g, " ");
+    if (titleLine(clean) && clean.length <= 120) return clean;
+  }
+  return "—";
 }
 
-/* ---------------------- JD skill extraction & scoring ---------------------- */
-function pickJDMustHaveSkills(jdText:string){
+/* ---------------------- JD must-haves & scoring ---------------------- */
+function pickJDMustHaveSkills(jdText: string) {
   const lower = jdText.toLowerCase();
-  // intersect JD with known skills (+ synonyms)
-  const presentCanon = new Set(foldSynonymsPresent(lower, Object.keys(SYNONYM_CANON)).concat(
-    KNOWN_SKILLS.filter(s=>lower.includes(s))
-  ));
-  // keep top 6
-  return [...presentCanon].slice(0,6);
+  const present = new Set(
+    canonicalPresence(lower, Object.keys(SYNONYM_CANON)).concat(
+      KNOWN_SKILLS.filter(s => lower.includes(s))
+    )
+  );
+
+  // try to detect strict "must-have/required/minimum" windows
+  const mustCtx = lower.match(/(must[- ]have|required|minimum)[^.\n]{0,180}/g) || [];
+  const mustInCtx = new Set<string>();
+  for (const span of mustCtx) {
+    for (const sk of present) if (span.includes(sk)) mustInCtx.add(sk);
+  }
+  const picked = [...(mustInCtx.size ? mustInCtx : present)].slice(0, 6);
+  return picked;
 }
 
 function scoreAndSummarize(jdText:string, resumeText:string){
@@ -120,30 +147,18 @@ function scoreAndSummarize(jdText:string, resumeText:string){
 
   const must = pickJDMustHaveSkills(jdText);
   const lower = resumeText.toLowerCase();
-
-  const matched = foldSynonymsPresent(lower, must);
+  const matched = canonicalPresence(lower, must);
   const gaps    = must.filter(m => !matched.includes(m));
   const matchFrac = must.length ? matched.length / must.length : 0;
 
-  // overall score tuned to hiring view
-  const final = Math.min(1, 0.55*matchFrac + 0.45*cosine);
-
+  const final = Math.min(1, 0.65*matchFrac + 0.35*cosine); // emphasize must-haves
   const yrs = totalExperience(resumeText);
   const edu = highestEducation(resumeText);
   const title = recentTitle(resumeText);
 
-  // simple recommendation rule; tune as desired
-  const recommend = final >= 0.55 && matched.length >= Math.max(2, Math.ceil(must.length*0.5));
+  const recommend = final >= 0.6 && matched.length >= Math.max(2, Math.ceil(must.length*0.5));
 
-  return {
-    score: final,                 // 0..1
-    recommend,                    // boolean
-    years: yrs,                   // "X.Y yrs"
-    education: edu,               // "Master's" etc.
-    recentTitle: title,           // last/first role line
-    matches: matched,             // must-have hits
-    gaps                           // must-have misses
-  };
+  return { score: final, recommend, years: yrs, education: edu, recentTitle: title, matches: matched, gaps };
 }
 
 /* -------------------------- parsing utilities -------------------------- */
@@ -175,7 +190,7 @@ async function bufferToText(filename: string, buf: Buffer): Promise<{ text: stri
   try { const raw = dec.decode(buf); return { text: normWS(raw), raw }; } catch { return { text:"", raw:"" }; }
 }
 
-/* ------------------------------- route ------------------------------- */
+/* --------------------------------- route --------------------------------- */
 export async function POST(req: NextRequest) {
   try {
     const form = await req.formData();

@@ -35,6 +35,23 @@ async function ocrInBrowser(file: File): Promise<string> {
   }
 }
 
+function pLimit(n: number) {
+  const running: Promise<any>[] = [];
+  let active = 0;
+  const next = async (fn: () => Promise<any>) => {
+    while (active >= n) await Promise.race(running);
+    active++;
+    const p = fn().finally(() => {
+      active--;
+      const i = running.indexOf(p);
+      if (i >= 0) running.splice(i, 1);
+    });
+    running.push(p);
+    return p;
+  };
+  return next;
+}
+
 export default function Page() {
   const [jd, setJd] = useState("");
   const [jdFile, setJdFile] = useState<File | null>(null);
@@ -42,23 +59,6 @@ export default function Page() {
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<any[]>([]);
   const [progress, setProgress] = useState("");
-
-  function pLimit(n: number) {
-    const running: Promise<any>[] = [];
-    let active = 0;
-    const next = async (fn: () => Promise<any>) => {
-      while (active >= n) await Promise.race(running);
-      active++;
-      const p = fn().finally(() => {
-        active--;
-        const i = running.indexOf(p);
-        if (i >= 0) running.splice(i, 1);
-      });
-      running.push(p);
-      return p;
-    };
-    return next;
-  }
 
   async function extractResumeText(file: File): Promise<{ text: string; notes: string[] }> {
     const notes: string[] = [];
@@ -84,7 +84,7 @@ export default function Page() {
       notes.push("Scanned PDF; OCR failed/empty");
       return { text: "", notes };
     }
-    // let server parse DOCX/others
+    // let server parse DOCX & others
     return { text: "", notes };
   }
 
@@ -118,9 +118,7 @@ export default function Page() {
         const data = await res.json();
         const [one] = data.results || [];
         if (one) {
-          if (notes.length) {
-            one.notes = one.notes && one.notes !== "—" ? `${one.notes}; ${notes.join("; ")}` : notes.join("; ");
-          }
+          if (notes.length) one.notes = one.notes && one.notes !== "—" ? `${one.notes}; ${notes.join("; ")}` : notes.join("; ");
           setResults(prev => [...prev, one].sort((a,b)=>(b.score||0)-(a.score||0)));
         }
       })
@@ -156,8 +154,8 @@ export default function Page() {
       <section className="card p-6">
         <h1 className="text-2xl font-semibold mb-2">AI Shortlist (Interview Readiness)</h1>
         <p className="text-gray-600 mb-6">
-          Paste or upload a JD, then upload resumes. Output shows only interview-critical info: Recommend, Match, Years,
-          Recent Title, Education, Key Matches & Gaps.
+          Paste or upload a JD, then upload resumes. Output shows only interview-critical info:
+          Recommend, Match %, Years, Recent Title, Education, Key Matches & Gaps.
         </p>
 
         <form onSubmit={onSubmit} className="grid gap-4">
