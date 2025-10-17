@@ -15,7 +15,9 @@ const STOP = new Set([
   "must","have","required","minimum","preferred","nice","experience","responsibilities","skills","requirements","summary","role","position","job","candidate","ability","knowledge"
 ]);
 
-const MONTHS: Record<string, number> = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,sept:8,oct:9,nov:10,dec:11 };
+const MONTHS: Record<string, number> = {
+  jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,sept:8,oct:9,nov:10,dec:11
+};
 const NOW = new Date();
 
 const normWS = (s:string)=>s.replace(/\u0000/g," ").replace(/\s+/g," ").trim();
@@ -169,8 +171,8 @@ function pickJDMustAndNice(jdText:string){
 /* =========================
    Experience parsing
 ========================= */
-/** robust date parsing: "Jan 2021", "January 2021", "02/2018", "2/18", "2019" */
-function toDate(token: string, asEnd=false): Date | null {
+/** robust date parsing: "Jan 2021", "January 2021", "02/2018", "2/18", "2019", "Present" */
+function toDate(token: string): Date | null {
   const s = token.trim().toLowerCase();
 
   if (/present|current|now/.test(s)) return new Date();
@@ -208,7 +210,7 @@ function parseRanges(text:string){
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     const s = toDate(m[1]);
-    const e = toDate(m[3], true) || new Date();
+    const e = toDate(m[3]) || new Date();
     if (s && e && e >= s && e.getFullYear() >= 1970) {
       ranges.push({ start: s, end: e });
     }
@@ -278,6 +280,27 @@ function computeExperience(text:string){
 }
 
 /* =========================
+   Education extraction
+========================= */
+function highestEducation(text: string) {
+  const t = text.toLowerCase();
+
+  // Doctorate (includes MD/DO/EdD etc.)
+  if (/\b(ph\.?d\.?|doctor of philosophy|doctorate|edd|m\.?d\.?|md|d\.?o\.?)\b/.test(t)) return "Doctorate";
+
+  // Master's
+  if (/\b(mba|m\.?s\.?|m\.?sc\.?|master'?s|mtech|m\.?tech|m\.?eng|m\.?engg|m\.?phil)\b/.test(t)) return "Master's";
+
+  // Bachelor's
+  if (/\b(b\.?e\.?|b\.?tech|b\.?s\.?|bsc|b\.?eng|b\.?engg|bachelor'?s)\b/.test(t)) return "Bachelor's";
+
+  // Associate / Diploma
+  if (/\b(associate'?s|aas|dip(?:loma)?)\b/.test(t)) return "Associate/Diploma";
+
+  return "—";
+}
+
+/* =========================
    Strict Recent Title (short only)
 ========================= */
 function recentTitle(text: string) {
@@ -301,6 +324,7 @@ function recentTitle(text: string) {
 
   const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
 
+  // Prefer "Title – Company" / "Title at Company"
   for (const L of lines.slice(0, 80)) {
     const m = L.match(/^\s*([^–\-|@]{1,80})\s*(?:[–\-|@]| at )\s*.+$/i);
     if (m) {
@@ -308,6 +332,7 @@ function recentTitle(text: string) {
       if (looksLikeTitle(maybeTitle)) return maybeTitle;
     }
   }
+  // Otherwise the first standalone title-like line
   for (const L of lines.slice(0, 80)) {
     const clean = L.replace(/\s{2,}/g, " ").trim();
     if (looksLikeTitle(clean)) return clean;
