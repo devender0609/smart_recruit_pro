@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+// Next.js route settings
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -13,13 +14,11 @@ const STOP = new Set([
   "but","not","will","can","may","should","would","could","if","then","than","so","such","into","over","under","about","across","within","without","per","via","using","use","used","including",
   "must","have","required","minimum","preferred","nice","experience","responsibilities","skills","requirements","summary","role","position","job","candidate","ability","knowledge"
 ]);
-
 const MONTHS: Record<string, number> = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,sept:8,oct:9,nov:10,dec:11 };
 
 const normWS = (s:string)=>s.replace(/\u0000/g," ").replace(/\s+/g," ").trim();
-const onlyLetters = (s:string)=>s.replace(/[^a-z]/g,"");
 
-/* Tokenization (lowercase, basic symbols kept for bigrams like "kubernetes cluster") */
+/* Tokenization + TF/IDF-ish basics */
 function tok(s:string) {
   return (s||"")
     .toLowerCase()
@@ -28,7 +27,6 @@ function tok(s:string) {
     .filter(Boolean);
 }
 function keywords(tokens:string[], min=3){ return tokens.filter(t => t.length>=min && !STOP.has(t)); }
-
 function bag(tokens:string[]){ const m=new Map<string,number>(); for(const t of tokens) m.set(t,(m.get(t)||0)+1); return m; }
 function dot(a:Map<string,number>, b:Map<string,number>){ let s=0; for(const[k,va] of a){ const vb=b.get(k); if(vb) s+=va*vb; } return s; }
 function norm(a:Map<string,number>){ let s=0; for(const[,v] of a) s+=v*v; return Math.sqrt(s)||1; }
@@ -37,7 +35,7 @@ function cosine(a:Map<string,number>, b:Map<string,number>){ return dot(a,b)/(no
 /* =========================
    Fuzzy matching (typo tolerant)
 ========================= */
-/* Damerau-Levenshtein distance with transpositions */
+// Damerau–Levenshtein (with transpositions)
 function editDistance(a:string,b:string){
   const n=a.length, m=b.length;
   if(n===0) return m; if(m===0) return n;
@@ -65,8 +63,6 @@ function editDistance(a:string,b:string){
   }
   return d[n+1][m+1];
 }
-
-/* Normalized similarity 0..1 */
 function fuzzySim(a:string,b:string){
   a = a.toLowerCase().trim(); b = b.toLowerCase().trim();
   if(!a || !b) return 0;
@@ -75,10 +71,7 @@ function fuzzySim(a:string,b:string){
   const maxLen = Math.max(a.length,b.length) || 1;
   return 1 - dist/maxLen;
 }
-
-/* Check if a multi-word term appears in text with fuzziness.
-   - Exact substring → match
-   - Else token-by-token fuzzy ≥ threshold, allowing minor typos/variants */
+/** fuzzyContains: exact substring OR token-window fuzzy match */
 function fuzzyContains(textLower:string, term:string){
   const t = term.toLowerCase().trim();
   if(!t) return false;
@@ -87,8 +80,7 @@ function fuzzyContains(textLower:string, term:string){
   const words = t.split(/\s+/).filter(Boolean);
   const textWords = textLower.split(/\s+/);
 
-  const thr = t.length <= 6 ? 0.82 : 0.88; // shorter terms allow slightly lower threshold
-  // sliding window compare
+  const thr = t.length <= 6 ? 0.82 : 0.88;
   for(let i=0;i<=textWords.length - words.length; i++){
     let ok = true;
     for(let k=0;k<words.length;k++){
@@ -103,18 +95,12 @@ function fuzzyContains(textLower:string, term:string){
    JD-driven skill extraction
 ========================= */
 function collectAcronyms(text:string){
-  // capture things like HIPAA, GDPR, PCI, ICH-GCP, CRM
   const set = new Set<string>();
   const acr = text.match(/\b[A-Z][A-Z0-9-]{2,8}\b/g) || [];
-  for(const a of acr){
-    if(a.length<=2) continue;
-    set.add(a.toLowerCase());
-  }
+  for(const a of acr){ if(a.length>2) set.add(a.toLowerCase()); }
   return [...set];
 }
-
 function topDomainTerms(jdText:string){
-  // derive frequent unigrams & bigrams in JD; keep domain-ish items
   const t = jdText.toLowerCase();
   const tokens = t.replace(/[^a-z0-9+./\- ]/g," ").split(/\s+/).filter(Boolean);
   const counts = new Map<string,number>();
@@ -136,21 +122,18 @@ function topDomainTerms(jdText:string){
   const acr = collectAcronyms(jdText);
   const merged = [...new Set([...acr, ...items])];
 
-  // soft filter to keep “domain-y” things:
+  // soft filter: keep “domain-ish” terms
   const domainy = merged.filter(k =>
-    /[a-z]/.test(k) && // contains letters
+    /[a-z]/.test(k) &&
     !/^(responsib|require|skill|years?|yrs|experience|role|team|work|good|strong|excellent)$/i.test(k)
   );
-  return domainy.slice(0, 40); // cap to 40 domain terms max
+  return domainy.slice(0, 40);
 }
-
 function extractMustWindows(jdLower:string){
-  // windows like: "must have", "required", "minimum", "nice to have", "preferred"
   const must = jdLower.match(/(?:must[- ]have|required|minimum)[^.\n]{0,240}/g) || [];
   const nice = jdLower.match(/(?:nice[- ]to[- ]have|preferred|bonus)[^.\n]{0,240}/g) || [];
   return { must, nice };
 }
-
 function pickJDMustAndNice(jdText:string){
   const lower = jdText.toLowerCase();
   const domain = topDomainTerms(jdText);
@@ -170,21 +153,20 @@ function pickJDMustAndNice(jdText:string){
   let mustTerms = pickFromWindows(must);
   let niceTerms = pickFromWindows(nice);
 
-  // If JD didn’t write explicit “must”, fallback to top domain terms
   if(mustTerms.length===0) {
     mustTerms = domain.slice(0, 8);
     niceTerms = domain.slice(8, 16);
   }
 
   return {
-    must: mustTerms.slice(0, 10),   // keep up to 10 must-haves
-    nice: niceTerms.slice(0, 10),   // keep up to 10 nice-to-haves
+    must: mustTerms.slice(0, 10),
+    nice: niceTerms.slice(0, 10),
     domain
   };
 }
 
 /* =========================
-   Resume signals (exp, edu, title)
+   Resume signals (exp, edu, strict title)
 ========================= */
 function parseMonthYear(s:string){
   s=s.toLowerCase().trim();
@@ -219,24 +201,40 @@ function highestEducation(text:string){
   if(/\bdiploma\b/.test(t)) return "Diploma";
   return "—";
 }
-function recentTitle(text:string){
-  const blocks = text.split(/\n{2,}/).map(b=>b.trim()).filter(Boolean);
-  const isTitle = (s:string)=>/(intern|junior|senior|staff|principal)?\s*(engineer|developer|manager|lead|architect|analyst|specialist|consultant|scientist|coordinator|associate|director|designer|account|sales|marketing|recruiter|operator|technician|nurse|assistant)\b/i.test(s);
-  for(const b of blocks.slice(0,6)){
-    if(/^(work\s+)?experience\b/i.test(b) || /(?:\b\d{4}\b).*?(?:present|current|\b\d{4}\b)/i.test(b)){
-      const lines=b.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
-      for(const L of lines.slice(0,12)){
-        const clean=L.replace(/\s{2,}/g," ");
-        if(isTitle(clean) && clean.length<=120) return clean;
-        const m=clean.match(/(.+?)\s+[–-]\s+(.+)|(.+?)\s+at\s+(.+)/i);
-        if(m){ const t=[m[2],m[1],m[3],m[4]].filter(Boolean).find(isTitle); if(t) return t; }
-      }
+/** STRICT title: short, no sentences, role nouns/seniority only */
+function recentTitle(text: string) {
+  const ROLE_NOUNS = [
+    "engineer","developer","manager","lead","architect","analyst","scientist","specialist",
+    "consultant","coordinator","associate","director","designer","account","sales","marketing",
+    "recruiter","operator","technician","nurse","assistant","administrator","officer","executive"
+  ];
+  const SENIORITY = ["intern","junior","senior","staff","principal","head","vp","lead"];
+
+  const looksLikeTitle = (s: string) => {
+    if (/[.?!]$/.test(s)) return false;
+    const words = s.trim().split(/\s+/);
+    if (words.length < 1 || words.length > 8) return false;
+    if (s.length > 60) return false;
+    const lower = s.toLowerCase();
+    const hasRole = ROLE_NOUNS.some(n => new RegExp(`\\b${n}\\b`).test(lower));
+    const hasSeniority = SENIORITY.some(n => new RegExp(`\\b${n}\\b`).test(lower));
+    return hasRole || hasSeniority;
+  };
+
+  const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+
+  // Prefer "Title – Company" / "Title at Company"
+  for (const L of lines.slice(0, 80)) {
+    const m = L.match(/^\s*([^–\-|@]{1,80})\s*(?:[–\-|@]| at )\s*.+$/i);
+    if (m) {
+      const maybeTitle = m[1].replace(/\s{2,}/g, " ").trim();
+      if (looksLikeTitle(maybeTitle)) return maybeTitle;
     }
   }
-  const lines=text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
-  for(const L of lines.slice(0,60)){
-    const clean=L.replace(/\s{2,}/g," ");
-    if(isTitle(clean)&&clean.length<=120) return clean;
+  // Otherwise the first standalone title-like line
+  for (const L of lines.slice(0, 80)) {
+    const clean = L.replace(/\s{2,}/g, " ").trim();
+    if (looksLikeTitle(clean)) return clean;
   }
   return "—";
 }
@@ -251,15 +249,12 @@ function computeMatches(jdTerms:string[], resumeLower:string){
   }
   return matched;
 }
-
 function scoreHiringFit(matchedMust:string[], gapsMust:string[], matchedNice:string[], cos:number){
-  // emphasize must-haves, then nice-to-haves, then global cosine
   const mustFrac = matchedMust.length / Math.max(1, matchedMust.length + gapsMust.length);
-  const niceScore = Math.min(1, matchedNice.length / 6); // cap effect
+  const niceScore = Math.min(1, matchedNice.length / 6);
   let s = 0.65*mustFrac + 0.20*niceScore + 0.15*cos;
   return Math.max(0, Math.min(1, s));
 }
-
 function looksLikePdfObjects(s:string){ return /%PDF-|\/Type\s*\/XObject|\/Subtype\s*\/(Image|Form)|\/CCITTFaxDecode|endobj|stream/i.test(s); }
 function isMostlyNoise(s:string){ if(!s) return true; const c=s.replace(/\s/g,""); if(c.length<40) return true; const letters=(c.match(/[a-zA-Z]/g)||[]).length; return letters/c.length<0.35; }
 
@@ -305,19 +300,22 @@ function summarize(jdText:string, resumeText:string){
 
   const matchedMust = computeMatches(must, resumeLower);
   const matchedNice = computeMatches(nice, resumeLower);
-  const gapsMust    = must.filter(t => !matchedMust.includes(t));
+
+  // TOP 3 GAPS (must-haves missing) — concise & meaningful
+  const gapsMustRaw = must.filter(t => !matchedMust.includes(t));
+  const gaps = gapsMustRaw.slice(0, 3);
 
   const years = totalExperience(resumeText);
   const edu   = highestEducation(resumeText);
   const title = recentTitle(resumeText);
 
-  const score = scoreHiringFit(matchedMust, gapsMust, matchedNice, cos);
+  const score = scoreHiringFit(matchedMust, gapsMustRaw, matchedNice, cos);
   const recommend = score >= 0.60 && matchedMust.length >= Math.max(1, Math.ceil(must.length*0.4));
 
-  // For display: keep top 6 key matches (favor must over nice)
+  // Show up to 6 key matches (favor must over nice)
   const keyMatches = [...matchedMust, ...matchedNice.filter(x=>!matchedMust.includes(x))].slice(0,6);
 
-  return { score, recommend, years, education: edu, recentTitle: title, matches: keyMatches, gaps: gapsMust };
+  return { score, recommend, years, education: edu, recentTitle: title, matches: keyMatches, gaps };
 }
 
 /* =========================
@@ -336,18 +334,16 @@ export async function POST(req: NextRequest) {
       jdText = text;
     }
 
-    // Resume provided as plain text (client OCR path)
+    // Resume provided as text (client OCR path)
     const resumeText = (form.get("resumeText") || "").toString();
     const resumeName = (form.get("resumeName") || "").toString() || "resume.txt";
 
     if (resumeText && resumeText.trim().length > 0) {
       const s = summarize(jdText, resumeText);
-      return NextResponse.json({
-        results: [{ filename: resumeName, ...s, notes: "Client text provided" }]
-      });
+      return NextResponse.json({ results: [{ filename: resumeName, ...s, notes: "Client text provided" }] });
     }
 
-    // Otherwise parse the uploaded file server-side (single per request)
+    // Otherwise parse first uploaded file server-side
     const files = form.getAll("resumes").filter(Boolean) as File[];
     if ((!jdText || jdText.length === 0) || files.length === 0) {
       return NextResponse.json({ error: "Missing job description or resumes." }, { status: 400 });
@@ -364,10 +360,7 @@ export async function POST(req: NextRequest) {
     }
 
     const s = summarize(jdText, text || "");
-
-    return NextResponse.json({
-      results: [{ filename: f.name, ...s, notes: notes.join("; ") || "—" }]
-    });
+    return NextResponse.json({ results: [{ filename: f.name, ...s, notes: notes.join("; ") || "—" }] });
   } catch (e:any) {
     return NextResponse.json({ error: e?.message || "Unexpected error" }, { status: 500 });
   }
