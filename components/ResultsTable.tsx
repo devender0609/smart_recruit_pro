@@ -7,7 +7,6 @@ export default function ResultsTable({ results = [] as any[] }) {
     );
   }
 
-  // Only show columns that have data in at least one row
   const anyTitle = results.some((r:any) => r.recentTitle && r.recentTitle !== "—");
   const anyEdu   = results.some((r:any) => r.education && r.education !== "—");
   const anyMatch = results.some((r:any) => r.matches && r.matches.length);
