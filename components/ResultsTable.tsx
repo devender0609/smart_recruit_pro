@@ -7,11 +7,13 @@ export default function ResultsTable({ results = [] as any[] }) {
     );
   }
 
-  const anyTitle = results.some((r:any) => r.recentTitle && r.recentTitle !== "—");
-  const anyEdu   = results.some((r:any) => r.education && r.education !== "—");
-  const anyMatch = results.some((r:any) => r.matches && r.matches.length);
-  const anyGaps  = results.some((r:any) => r.gaps && r.gaps.length);
-  const anyNotes = results.some((r:any) => r.notes && r.notes !== "—");
+  const anyTitle  = results.some((r:any) => r.recentTitle && r.recentTitle !== "—");
+  const anyEdu    = results.some((r:any) => r.education && r.education !== "—");
+  const anyMatch  = results.some((r:any) => r.matches && r.matches.length);
+  const anyGaps   = results.some((r:any) => r.gaps && r.gaps.length);
+  const anyNotes  = results.some((r:any) => r.notes && r.notes !== "—");
+  const anyTotExp = results.some((r:any) => r.totalExp && r.totalExp !== "—");
+  const anyLatest = results.some((r:any) => r.latestTenure && r.latestTenure !== "—");
 
   return (
     <section className="card p-0 overflow-hidden">
@@ -23,11 +25,12 @@ export default function ResultsTable({ results = [] as any[] }) {
               <th className="px-5 py-3">Candidate</th>
               <th className="px-5 py-3">Recommend</th>
               <th className="px-5 py-3">Match</th>
-              <th className="px-5 py-3">Years</th>
+              {anyTotExp && <th className="px-5 py-3">Total Exp</th>}
+              {anyLatest && <th className="px-5 py-3">Latest Tenure</th>}
               {anyTitle && <th className="px-5 py-3">Recent Title</th>}
               {anyEdu   && <th className="px-5 py-3">Education</th>}
               {anyMatch && <th className="px-5 py-3">Key Matches</th>}
-              {anyGaps  && <th className="px-5 py-3">Gaps</th>}
+              {anyGaps  && <th className="px-5 py-3">Key Gaps (must-haves missing)</th>}
               {anyNotes && <th className="px-5 py-3">Notes</th>}
             </tr>
           </thead>
@@ -44,7 +47,8 @@ export default function ResultsTable({ results = [] as any[] }) {
                   )}
                 </td>
                 <td className="px-5 py-3">{((r.score ?? 0) * 100).toFixed(0)}%</td>
-                <td className="px-5 py-3">{r.years ?? "—"}</td>
+                {anyTotExp && <td className="px-5 py-3">{r.totalExp ?? "—"}</td>}
+                {anyLatest && <td className="px-5 py-3">{r.latestTenure ?? "—"}</td>}
                 {anyTitle && <td className="px-5 py-3">{r.recentTitle ?? "—"}</td>}
                 {anyEdu   && <td className="px-5 py-3">{r.education ?? "—"}</td>}
                 {anyMatch && (

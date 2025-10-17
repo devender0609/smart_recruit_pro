@@ -14,11 +14,13 @@ const STOP = new Set([
   "but","not","will","can","may","should","would","could","if","then","than","so","such","into","over","under","about","across","within","without","per","via","using","use","used","including",
   "must","have","required","minimum","preferred","nice","experience","responsibilities","skills","requirements","summary","role","position","job","candidate","ability","knowledge"
 ]);
+
 const MONTHS: Record<string, number> = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,sept:8,oct:9,nov:10,dec:11 };
+const NOW = new Date();
 
 const normWS = (s:string)=>s.replace(/\u0000/g," ").replace(/\s+/g," ").trim();
 
-/* Tokenization + TF/IDF-ish basics */
+/* Tokenization + TF-ish utilities */
 function tok(s:string) {
   return (s||"")
     .toLowerCase()
@@ -122,14 +124,13 @@ function topDomainTerms(jdText:string){
   const acr = collectAcronyms(jdText);
   const merged = [...new Set([...acr, ...items])];
 
-  // soft filter: keep “domain-ish” terms
   const domainy = merged.filter(k =>
     /[a-z]/.test(k) &&
     !/^(responsib|require|skill|years?|yrs|experience|role|team|work|good|strong|excellent)$/i.test(k)
   );
   return domainy.slice(0, 40);
 }
-function extractMustWindows(jdLower:string){
+function extractWindows(jdLower:string){
   const must = jdLower.match(/(?:must[- ]have|required|minimum)[^.\n]{0,240}/g) || [];
   const nice = jdLower.match(/(?:nice[- ]to[- ]have|preferred|bonus)[^.\n]{0,240}/g) || [];
   return { must, nice };
@@ -137,9 +138,9 @@ function extractMustWindows(jdLower:string){
 function pickJDMustAndNice(jdText:string){
   const lower = jdText.toLowerCase();
   const domain = topDomainTerms(jdText);
-  const { must, nice } = extractMustWindows(lower);
+  const { must, nice } = extractWindows(lower);
 
-  const pickFromWindows = (wins:string[])=>{
+  const pickFrom = (wins:string[])=>{
     const set=new Set<string>();
     for(const span of wins){
       for(const term of domain){
@@ -150,8 +151,8 @@ function pickJDMustAndNice(jdText:string){
     return [...set];
   };
 
-  let mustTerms = pickFromWindows(must);
-  let niceTerms = pickFromWindows(nice);
+  let mustTerms = pickFrom(must);
+  let niceTerms = pickFrom(nice);
 
   if(mustTerms.length===0) {
     mustTerms = domain.slice(0, 8);
@@ -166,42 +167,119 @@ function pickJDMustAndNice(jdText:string){
 }
 
 /* =========================
-   Resume signals (exp, edu, strict title)
+   Experience parsing
 ========================= */
-function parseMonthYear(s:string){
-  s=s.toLowerCase().trim();
-  const m1=s.match(/\b([a-z]{3,9})\s+(\d{4})\b/);
-  if(m1 && MONTHS[m1[1].slice(0,3)]) return new Date(Number(m1[2]), MONTHS[m1[1].slice(0,3)], 1);
-  const m2=s.match(/\b(19|20)\d{2}\b/);
-  if(m2) return new Date(Number(m2[0]),0,1);
+/** robust date parsing: "Jan 2021", "January 2021", "02/2018", "2/18", "2019" */
+function toDate(token: string, asEnd=false): Date | null {
+  const s = token.trim().toLowerCase();
+
+  if (/present|current|now/.test(s)) return new Date();
+
+  // Month name + year
+  let m = s.match(/\b([a-z]{3,9})\s+(\d{2,4})\b/);
+  if (m) {
+    const mo = MONTHS[m[1].slice(0,3)];
+    if (mo !== undefined) {
+      const yy = Number(m[2].length===2 ? Number(m[2]) + 2000 : m[2]);
+      if (yy>=1970 && yy<=NOW.getFullYear()+1) return new Date(yy, mo, 1);
+    }
+  }
+
+  // MM/YYYY or M/YYYY or MM-YYYY
+  m = s.match(/\b(\d{1,2})[\/\-](\d{2,4})\b/);
+  if (m) {
+    const mo = Math.max(1, Math.min(12, Number(m[1]))) - 1;
+    let yy = Number(m[2]);
+    if (yy < 100) yy += 2000; // assume 20xx for two-digit
+    if (yy>=1970 && yy<=NOW.getFullYear()+1) return new Date(yy, mo, 1);
+  }
+
+  // Year only
+  m = s.match(/\b(19|20)\d{2}\b/);
+  if (m) return new Date(Number(m[0]), 0, 1);
+
   return null;
 }
-function totalExperience(text:string){
-  const now=new Date(); let months=0;
-  const re=new RegExp(["([A-Za-z]{3,9}\\s+\\d{4})\\s*[-–—to]+\\s*(Present|Now|Current|[A-Za-z]{3,9}\\s+\\d{4}|(19|20)\\d{2})","((19|20)\\d{2})\\s*[-–—to]+\\s*(Present|Now|Current|(19|20)\\d{2})"].join("|"),"gi");
-  const seen=new Set<string>(); let m:RegExpExecArray|null;
-  while((m=re.exec(text))!==null){const raw=m[0]; if(seen.has(raw))continue; seen.add(raw);
-    const parts=raw.split(/[-–—to]+/i).map(s=>s.trim());
-    const start=parseMonthYear(parts[0]); const endToken=parts[1]?.toLowerCase();
-    const end = /present|now|current/.test(endToken||"") ? now : parseMonthYear(parts[1]||"");
-    if(start){const ed=end||now; const dm=(ed.getFullYear()-start.getFullYear())*12+(ed.getMonth()-start.getMonth()); if(dm>0 && dm<80*12) months+=dm;}
+
+/** extract ranges like "Jan 2020 – Mar 2023", "02/18-11/21", "2019 to Present" */
+function parseRanges(text:string){
+  const ranges: {start: Date, end: Date}[] = [];
+  const re = /([A-Za-z]{3,9}\s+\d{2,4}|\d{1,2}[\/\-]\d{2,4}|(19|20)\d{2}|Present|Now|Current)\s*(?:[-–—]|to)\s*([A-Za-z]{3,9}\s+\d{2,4}|\d{1,2}[\/\-]\d{2,4}|(19|20)\d{2}|Present|Now|Current)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const s = toDate(m[1]);
+    const e = toDate(m[3], true) || new Date();
+    if (s && e && e >= s && e.getFullYear() >= 1970) {
+      ranges.push({ start: s, end: e });
+    }
   }
-  if (months<=0) {
+  return ranges;
+}
+
+/** merge overlapping/adjacent ranges to avoid double counting */
+function mergeRanges(ranges: {start: Date, end: Date}[]) {
+  if (ranges.length <= 1) return ranges.slice();
+  const sorted = ranges.slice().sort((a,b)=>a.start.getTime()-b.start.getTime());
+  const out: {start: Date, end: Date}[] = [];
+  let cur = sorted[0];
+  for (let i=1;i<sorted.length;i++){
+    const r = sorted[i];
+    if (r.start <= cur.end) {
+      if (r.end > cur.end) cur.end = r.end; // extend
+    } else {
+      out.push(cur);
+      cur = r;
+    }
+  }
+  out.push(cur);
+  return out;
+}
+
+function humanDurationMonths(months:number){
+  if (months <= 0) return "—";
+  if (months < 12) return `${months} mos`;
+  const yrs = months/12;
+  return yrs >= 0.5 ? `${yrs.toFixed(1)} yrs` : `${months} mos`;
+}
+
+/** return { total: "...", latest: "..." } */
+function computeExperience(text:string){
+  const ranges = mergeRanges(parseRanges(text));
+  if (ranges.length === 0) {
+    // fallback: "X years of experience"
     const phrase = text.match(/(\d+)\s*(\+)?\s*(?:years|yrs)\s+(?:of\s+)?(?:experience|exp)\b/i);
-    if (phrase) return `${phrase[1]}${phrase[2]?"+":""} yrs`;
-    return "—";
+    const total = phrase ? `${phrase[1]}${phrase[2]?"+":""} yrs` : "—";
+    return { total, latest: "—" };
   }
-  const yrs = months/12; return yrs>=0.5 ? `${yrs.toFixed(1)} yrs` : `${months} mos`;
+
+  let totalMonths = 0;
+  let latestMonths = 0;
+  let latestEnd = new Date(0);
+  let latestStart = new Date(0);
+
+  for (const r of ranges) {
+    const dm = (r.end.getFullYear()-r.start.getFullYear())*12 + (r.end.getMonth()-r.start.getMonth());
+    if (dm > 0 && dm < 80*12) totalMonths += dm;
+
+    if (r.end > latestEnd) {
+      latestEnd = r.end;
+      latestStart = r.start;
+      latestMonths = dm > 0 ? dm : 0;
+    }
+  }
+
+  // bound total to a realistic cap (e.g., 60 years)
+  totalMonths = Math.min(totalMonths, 60*12);
+
+  return {
+    total: humanDurationMonths(Math.round(totalMonths)),
+    latest: humanDurationMonths(Math.round(latestMonths))
+  };
 }
-function highestEducation(text:string){
-  const t=text.toLowerCase();
-  if(/\b(ph\.?d\.?|doctor of philosophy|doctorate)\b/.test(t)) return "PhD";
-  if(/\b(mba|m\.?s\.?|m\.?sc\.?|master'?s|mtech|m\.?tech)\b/.test(t)) return "Master's";
-  if(/\b(b\.?e\.?|b\.?tech|b\.?s\.?|bsc|bachelor'?s)\b/.test(t)) return "Bachelor's";
-  if(/\bdiploma\b/.test(t)) return "Diploma";
-  return "—";
-}
-/** STRICT title: short, no sentences, role nouns/seniority only */
+
+/* =========================
+   Strict Recent Title (short only)
+========================= */
 function recentTitle(text: string) {
   const ROLE_NOUNS = [
     "engineer","developer","manager","lead","architect","analyst","scientist","specialist",
@@ -223,7 +301,6 @@ function recentTitle(text: string) {
 
   const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
 
-  // Prefer "Title – Company" / "Title at Company"
   for (const L of lines.slice(0, 80)) {
     const m = L.match(/^\s*([^–\-|@]{1,80})\s*(?:[–\-|@]| at )\s*.+$/i);
     if (m) {
@@ -231,7 +308,6 @@ function recentTitle(text: string) {
       if (looksLikeTitle(maybeTitle)) return maybeTitle;
     }
   }
-  // Otherwise the first standalone title-like line
   for (const L of lines.slice(0, 80)) {
     const clean = L.replace(/\s{2,}/g, " ").trim();
     if (looksLikeTitle(clean)) return clean;
@@ -240,7 +316,7 @@ function recentTitle(text: string) {
 }
 
 /* =========================
-   JD/Resume matching
+   Matching & scoring
 ========================= */
 function computeMatches(jdTerms:string[], resumeLower:string){
   const matched:string[] = [];
@@ -259,7 +335,7 @@ function looksLikePdfObjects(s:string){ return /%PDF-|\/Type\s*\/XObject|\/Subty
 function isMostlyNoise(s:string){ if(!s) return true; const c=s.replace(/\s/g,""); if(c.length<40) return true; const letters=(c.match(/[a-zA-Z]/g)||[]).length; return letters/c.length<0.35; }
 
 /* =========================
-   Parse buffers (PDF/DOCX/TXT)
+   Buffer parsing (PDF/DOCX/TXT)
 ========================= */
 async function bufferToText(filename: string, buf: Buffer): Promise<{ text: string; raw: string }> {
   const { fileTypeFromBuffer } = await import("file-type");
@@ -288,7 +364,7 @@ async function bufferToText(filename: string, buf: Buffer): Promise<{ text: stri
 }
 
 /* =========================
-   Main scorer
+   Main summarize
 ========================= */
 function summarize(jdText:string, resumeText:string){
   const jdTokens = keywords(tok(jdText),3);
@@ -301,21 +377,25 @@ function summarize(jdText:string, resumeText:string){
   const matchedMust = computeMatches(must, resumeLower);
   const matchedNice = computeMatches(nice, resumeLower);
 
-  // TOP 3 GAPS (must-haves missing) — concise & meaningful
+  // TOP 3 GAPS (must-haves missing) — concise
   const gapsMustRaw = must.filter(t => !matchedMust.includes(t));
   const gaps = gapsMustRaw.slice(0, 3);
 
-  const years = totalExperience(resumeText);
+  const { total: totalExp, latest: latestTenure } = computeExperience(resumeText);
   const edu   = highestEducation(resumeText);
   const title = recentTitle(resumeText);
 
   const score = scoreHiringFit(matchedMust, gapsMustRaw, matchedNice, cos);
   const recommend = score >= 0.60 && matchedMust.length >= Math.max(1, Math.ceil(must.length*0.4));
 
-  // Show up to 6 key matches (favor must over nice)
   const keyMatches = [...matchedMust, ...matchedNice.filter(x=>!matchedMust.includes(x))].slice(0,6);
 
-  return { score, recommend, years, education: edu, recentTitle: title, matches: keyMatches, gaps };
+  return {
+    score, recommend,
+    totalExp, latestTenure,
+    education: edu, recentTitle: title,
+    matches: keyMatches, gaps
+  };
 }
 
 /* =========================
